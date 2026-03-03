@@ -12,7 +12,7 @@
 		"type-check": "tsc --noEmit"
 	},
 	"dependencies": {
-		"@cloudflare/agents": "^0.0.71",
+		"agents": "^0.0.71",
 		"@modelcontextprotocol/sdk": "^1.26.0",
 		"zod": "^4.3.6"
 	},
