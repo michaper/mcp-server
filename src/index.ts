@@ -7,7 +7,7 @@ export interface Env extends Cloudflare.Env {
   CONFLUENCE_EMAIL: string;
   CONFLUENCE_API_TOKEN: string;
   OAUTH_PROVIDER: import("@cloudflare/workers-oauth-provider").OAuthHelpers;
-  AUTHORIZED_EMAIL?: string;
+  AUTHORIZED_EMAILS?: string;
 }
 
 export class MyMCP extends McpAgent<Env> {
@@ -193,9 +193,11 @@ const defaultHandler = {
     if (url.pathname === "/authorize") {
       const oauthReqInfo = await env.OAUTH_PROVIDER.parseAuthRequest(request);
       if (!oauthReqInfo.clientId) return new Response("Invalid request", { status: 400 });
-      const allowedEmail = env.AUTHORIZED_EMAIL ?? "michaper@gmail.com";
+      const allowedEmails = (env.AUTHORIZED_EMAILS ?? "matanper@gmail.com,michaper@gmail.com")
+        .split(",")
+        .map((e) => e.trim().toLowerCase());
       const email = request.headers.get("Cf-Access-Authenticated-User-Email");
-      if (!email || email.toLowerCase() !== allowedEmail.toLowerCase()) {
+      if (!email || !allowedEmails.includes(email.toLowerCase())) {
         return new Response("Forbidden", { status: 403 });
       }
       const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
