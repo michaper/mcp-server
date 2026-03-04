@@ -1,3 +1,4 @@
+import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -5,6 +6,8 @@ import { z } from "zod";
 export interface Env extends Cloudflare.Env {
   CONFLUENCE_EMAIL: string;
   CONFLUENCE_API_TOKEN: string;
+  OAUTH_PROVIDER: import("@cloudflare/workers-oauth-provider").OAuthHelpers;
+  AUTHORIZED_EMAIL?: string;
 }
 
 export class MyMCP extends McpAgent<Env> {
@@ -184,11 +187,25 @@ export class MyMCP extends McpAgent<Env> {
   }
 }
 
-export default {
-  fetch(request: Request, env: Env, ctx: ExecutionContext) {
+const defaultHandler = {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(request.url);
-    if (url.pathname === "/mcp") {
-      return MyMCP.serve("/mcp").fetch(request, env, ctx);
+    if (url.pathname === "/authorize") {
+      const oauthReqInfo = await env.OAUTH_PROVIDER.parseAuthRequest(request);
+      if (!oauthReqInfo.clientId) return new Response("Invalid request", { status: 400 });
+      const allowedEmail = env.AUTHORIZED_EMAIL ?? "michaper@gmail.com";
+      const email = request.headers.get("Cf-Access-Authenticated-User-Email");
+      if (!email || email.toLowerCase() !== allowedEmail.toLowerCase()) {
+        return new Response("Forbidden", { status: 403 });
+      }
+      const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
+        request: oauthReqInfo,
+        userId: email,
+        metadata: { label: email },
+        scope: oauthReqInfo.scope,
+        props: { email },
+      });
+      return Response.redirect(redirectTo, 302);
     }
     if (url.pathname === "/sse") {
       return MyMCP.serveSSE("/sse").fetch(request, env, ctx);
@@ -196,3 +213,12 @@ export default {
     return new Response("ShiriOS MCP Server", { status: 200 });
   },
 };
+
+export default new OAuthProvider({
+  apiRoute: "/mcp",
+  apiHandler: MyMCP.serve("/mcp"),
+  defaultHandler: { fetch: defaultHandler.fetch },
+  authorizeEndpoint: "/authorize",
+  tokenEndpoint: "/token",
+  clientRegistrationEndpoint: "/register",
+});
