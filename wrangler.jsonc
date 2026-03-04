@@ -24,5 +24,8 @@
 	},
 	"observability": {
 		"enabled": true
+	},
+	"vars": {
+		"CONFLUENCE_EMAIL": "michaper@gmail.com"
 	}
 }
