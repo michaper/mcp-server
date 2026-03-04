@@ -21,6 +21,30 @@ export class MyMCP extends McpAgent<Env> {
     });
 
     this.server.registerTool(
+      "confluence_get_page",
+      {
+        description: "Get a Confluence page by ID. Returns full page data including title, version, and body content.",
+        inputSchema: {
+          pageId: z.string().describe("Confluence page ID"),
+          bodyFormat: z
+            .enum(["storage", "atlas_doc_format", "view"])
+            .optional()
+            .describe("Body representation: storage (XHTML), atlas_doc_format, or view"),
+        },
+      },
+      async ({ pageId, bodyFormat }) => {
+        const params = new URLSearchParams({ "include-version": "true" });
+        if (bodyFormat) params.set("body-format", bodyFormat);
+        const res = await fetch(`${base}/${pageId}?${params}`, { headers: headers() });
+        const data: Record<string, unknown> = await res.json();
+        if (!res.ok) {
+          return { content: [{ type: "text" as const, text: `Error ${res.status}: ${JSON.stringify(data)}` }], isError: true };
+        }
+        return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      },
+    );
+
+    this.server.registerTool(
       "confluence_get_version",
       {
         description: "Get the current version number and title of a Confluence page",
@@ -73,6 +97,88 @@ export class MyMCP extends McpAgent<Env> {
         }
         const newVersion = data.version as Record<string, unknown> | undefined;
         return { content: [{ type: "text" as const, text: `Updated successfully. New version: ${newVersion?.number}` }] };
+      },
+    );
+
+    this.server.registerTool(
+      "confluence_update_page_title",
+      {
+        description: "Update only the title of a Confluence page. Use when renaming without changing content.",
+        inputSchema: {
+          pageId: z.string().describe("Confluence page ID"),
+          title: z.string().describe("New page title"),
+        },
+      },
+      async ({ pageId, title }) => {
+        const res = await fetch(`${base}/${pageId}/title`, {
+          method: "PUT",
+          headers: { ...headers(), "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "current", title }),
+        });
+        const data: Record<string, unknown> = await res.json();
+        if (!res.ok) {
+          return { content: [{ type: "text" as const, text: `Error ${res.status}: ${JSON.stringify(data)}` }], isError: true };
+        }
+        return { content: [{ type: "text" as const, text: `Title updated to: ${data.title}` }] };
+      },
+    );
+
+    this.server.registerTool(
+      "confluence_create_page",
+      {
+        description: "Create a new Confluence page in a space.",
+        inputSchema: {
+          spaceId: z.string().describe("Space ID where the page will be created"),
+          title: z.string().describe("Page title"),
+          content: z.string().optional().describe("Page body in Confluence storage format (XHTML)"),
+          parentId: z.string().optional().describe("Parent page ID for nested pages"),
+          status: z.enum(["current", "draft"]).optional().describe("Page status (default: current)"),
+        },
+      },
+      async ({ spaceId, title, content, parentId, status }) => {
+        const body: Record<string, unknown> = {
+          spaceId,
+          status: status ?? "current",
+          title,
+        };
+        if (parentId) body.parentId = parentId;
+        if (content) body.body = { representation: "storage", value: content };
+        const res = await fetch(base, {
+          method: "POST",
+          headers: { ...headers(), "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data: Record<string, unknown> = await res.json();
+        if (!res.ok) {
+          return { content: [{ type: "text" as const, text: `Error ${res.status}: ${JSON.stringify(data)}` }], isError: true };
+        }
+        const newId = data.id as string | undefined;
+        return { content: [{ type: "text" as const, text: `Page created. ID: ${newId}, Title: ${data.title}` }] };
+      },
+    );
+
+    this.server.registerTool(
+      "confluence_delete_page",
+      {
+        description:
+          "Delete a Confluence page by ID. Moves page to trash. Use purge=true to permanently delete a trashed page, draft=true for drafts.",
+        inputSchema: {
+          pageId: z.string().describe("Confluence page ID"),
+          purge: z.boolean().optional().describe("Permanently delete a trashed page (requires space admin)"),
+          draft: z.boolean().optional().describe("Delete a draft page (discarded drafts are permanently deleted)"),
+        },
+      },
+      async ({ pageId, purge, draft }) => {
+        const params = new URLSearchParams();
+        if (purge) params.set("purge", "true");
+        if (draft) params.set("draft", "true");
+        const qs = params.toString();
+        const res = await fetch(`${base}/${pageId}${qs ? `?${qs}` : ""}`, { method: "DELETE", headers: headers() });
+        if (res.status === 204) {
+          return { content: [{ type: "text" as const, text: "Page deleted successfully." }] };
+        }
+        const data: Record<string, unknown> = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+        return { content: [{ type: "text" as const, text: `Error ${res.status}: ${JSON.stringify(data)}` }], isError: true };
       },
     );
   }
