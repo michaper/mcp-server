@@ -7,6 +7,9 @@ export interface Env extends Cloudflare.Env {
   CONFLUENCE_EMAIL: string;
   CONFLUENCE_API_TOKEN: string;
   OAUTH_PROVIDER: import("@cloudflare/workers-oauth-provider").OAuthHelpers;
+  OAUTH_KV: KVNamespace;
+  GITHUB_CLIENT_ID: string;
+  GITHUB_CLIENT_SECRET: string;
   AUTHORIZED_EMAILS?: string;
 }
 
@@ -190,16 +193,70 @@ export class MyMCP extends McpAgent<Env> {
 const defaultHandler = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(request.url);
+
     if (url.pathname === "/authorize") {
       const oauthReqInfo = await env.OAUTH_PROVIDER.parseAuthRequest(request);
       if (!oauthReqInfo.clientId) return new Response("Invalid request", { status: 400 });
+
+      // Save the OAuth request info in KV keyed by a random state value (10 min TTL).
+      // We retrieve it in /callback after GitHub redirects back.
+      const state = crypto.randomUUID();
+      await env.OAUTH_KV.put(`gh_state:${state}`, JSON.stringify(oauthReqInfo), { expirationTtl: 600 });
+
+      const githubUrl = new URL("https://github.com/login/oauth/authorize");
+      githubUrl.searchParams.set("client_id", env.GITHUB_CLIENT_ID);
+      githubUrl.searchParams.set("redirect_uri", `${url.origin}/callback`);
+      githubUrl.searchParams.set("scope", "user:email");
+      githubUrl.searchParams.set("state", state);
+      return Response.redirect(githubUrl.toString(), 302);
+    }
+
+    if (url.pathname === "/callback") {
+      const code = url.searchParams.get("code");
+      const state = url.searchParams.get("state");
+      if (!code || !state) return new Response("Invalid callback", { status: 400 });
+
+      const oauthReqInfoRaw = await env.OAUTH_KV.get(`gh_state:${state}`);
+      if (!oauthReqInfoRaw) return new Response("State expired or invalid", { status: 400 });
+      await env.OAUTH_KV.delete(`gh_state:${state}`);
+      const oauthReqInfo = JSON.parse(oauthReqInfoRaw) as Awaited<
+        ReturnType<typeof env.OAUTH_PROVIDER.parseAuthRequest>
+      >;
+
+      // Exchange the GitHub code for an access token
+      const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_id: env.GITHUB_CLIENT_ID,
+          client_secret: env.GITHUB_CLIENT_SECRET,
+          code,
+          redirect_uri: `${url.origin}/callback`,
+        }),
+      });
+      const tokenData = (await tokenRes.json()) as Record<string, unknown>;
+      const githubToken = tokenData.access_token as string | undefined;
+      if (!githubToken) return new Response("GitHub authentication failed", { status: 401 });
+
+      // Fetch the user's verified primary email from GitHub
+      const emailsRes = await fetch("https://api.github.com/user/emails", {
+        headers: { Authorization: `Bearer ${githubToken}`, "User-Agent": "mcp-server" },
+      });
+      const emails = (await emailsRes.json()) as Array<{
+        email: string;
+        primary: boolean;
+        verified: boolean;
+      }>;
+      const email = emails.find((e) => e.primary && e.verified)?.email;
+      if (!email) return new Response("No verified primary email on GitHub account", { status: 401 });
+
       const allowedEmails = (env.AUTHORIZED_EMAILS ?? "matanper@gmail.com,michaper@gmail.com")
         .split(",")
         .map((e) => e.trim().toLowerCase());
-      const email = request.headers.get("Cf-Access-Authenticated-User-Email");
-      if (!email || !allowedEmails.includes(email.toLowerCase())) {
+      if (!allowedEmails.includes(email.toLowerCase())) {
         return new Response("Forbidden", { status: 403 });
       }
+
       const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
         request: oauthReqInfo,
         userId: email,
@@ -209,6 +266,7 @@ const defaultHandler = {
       });
       return Response.redirect(redirectTo, 302);
     }
+
     if (url.pathname === "/sse") {
       return MyMCP.serveSSE("/sse").fetch(request, env, ctx);
     }
