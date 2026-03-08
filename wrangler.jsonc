@@ -26,6 +26,7 @@
 		"enabled": true
 	},
 	"vars": {
-		"CONFLUENCE_EMAIL": "michaper@gmail.com"
+		"CONFLUENCE_EMAIL": "michaper@gmail.com",
+		"GOOGLE_APPS_SCRIPT_URL": "https://script.google.com/macros/s/AKfycbyDA_dj33os0eZg5leOo0PvbRENzE9-jzyybTkp0DaO7L1z5twxLFjtrtCONt7wJHEQ/exec"
 	}
 }
